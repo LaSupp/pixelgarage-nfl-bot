@@ -34,6 +34,8 @@ HOME_FIELD_ADV = 5.0
 FALLBACK_MODELS = [
     "gemini-3.8-flash",
     "gemini-3.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
 ]
 
 # NFL Divisions & Colors for Charts
@@ -448,6 +450,7 @@ def render_playoff_chart(sim_df: pd.DataFrame, rankings_df: pd.DataFrame, curr_w
 
 # --- Gemini Copy & GitHub Issue Draft Creator ---
 def generate_post_options(gemini_client: genai.Client, summary_payload: str) -> list[str]:
+    last_err = None
     for model_name in FALLBACK_MODELS:
         for _ in range(3):
             try:
@@ -465,13 +468,13 @@ def generate_post_options(gemini_client: genai.Client, summary_payload: str) -> 
                 if len(opts) >= 3:
                     return opts[:3]
             except Exception as e:
-                err_str = str(e)
-                if "503" in err_str or "429" in err_str:
+                last_err = f"[{model_name}] {e}"
+                print(last_err)
+                if "503" in str(e) or "429" in str(e):
                     time.sleep(15)
                     continue
-                print(f"[{model_name}] Error: {err_str}")
                 break
-    raise RuntimeError("All Gemini models failed to generate NFL post options.")
+    raise RuntimeError(f"All Gemini models failed. Last error: {last_err}")
 
 
 def open_draft_issue(curr_wk: int, options: list[str], top10_md: str, slope_path: str, odds_path: str) -> None:
