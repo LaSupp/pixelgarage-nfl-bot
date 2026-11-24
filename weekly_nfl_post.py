@@ -105,22 +105,28 @@ def save_last_posted_week(week: int) -> None:
         json.dump({"season": SEASON, "last_week": week}, f, indent=2)
 
 
+_LOGO_IMAGE_CACHE: dict[str, Image.Image] = {}
+
+
 def get_team_logo(team: str, zoom: float = 0.042) -> OffsetImage | None:
-    """Loads team logo from local logos/ directory first, falling back to ESPN CDN."""
-    local_path = os.path.join(LOGO_DIR, f"{team}.png")
-    try:
-        if os.path.exists(local_path):
-            img = Image.open(local_path).convert("RGBA")
-            return OffsetImage(img, zoom=zoom)
-        code = ESPN_LOGO_MAP.get(team, team.lower())
-        url = f"https://a.espncdn.com/i/teamlogos/nfl/500/{code}.png"
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        img = Image.open(BytesIO(resp.content)).convert("RGBA")
-        return OffsetImage(img, zoom=zoom)
-    except Exception as e:
-        print(f"Warning: could not load logo for {team}: {e}")
-        return None
+    """Loads team logo from in-memory cache or local logos/ dir, falling back to ESPN CDN once."""
+    if team not in _LOGO_IMAGE_CACHE:
+        local_path = os.path.join(LOGO_DIR, f"{team}.png")
+        try:
+            if os.path.exists(local_path):
+                img = Image.open(local_path).convert("RGBA")
+            else:
+                code = ESPN_LOGO_MAP.get(team, team.lower())
+                url = f"https://a.espncdn.com/i/teamlogos/nfl/500/{code}.png"
+                resp = requests.get(url, timeout=10)
+                resp.raise_for_status()
+                img = Image.open(BytesIO(resp.content)).convert("RGBA")
+            _LOGO_IMAGE_CACHE[team] = img
+        except Exception as e:
+            print(f"Warning: could not load logo for {team}: {e}")
+            return None
+
+    return OffsetImage(_LOGO_IMAGE_CACHE[team], zoom=zoom)
 
 
 # --- Core Power Ranking Engine (Phase 1 v2) ---
