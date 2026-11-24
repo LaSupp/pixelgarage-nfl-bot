@@ -35,9 +35,8 @@ HOME_FIELD_ADV = 5.0
 
 FALLBACK_MODELS = [
     "gemini-3.8-flash",
-    "gemini-2.5-flash",
     "gemini-3.5-flash-lite",
-    "gemini-2.0-flash",
+    "gemini-3.5-flash",
 ]
 
 TEAM_DIVISIONS = {
@@ -507,7 +506,10 @@ def generate_post_options(gemini_client: genai.Client, system_prompt: str, summa
             except Exception as e:
                 last_err = f"[{model_name}] {e}"
                 print(last_err)
-                if "503" in str(e) or "429" in str(e):
+                err_str = str(e)
+                if "PerDay" in err_str:
+                    break
+                if "503" in err_str or "429" in err_str:
                     time.sleep(15)
                     continue
                 break
