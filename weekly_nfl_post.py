@@ -108,8 +108,8 @@ def save_last_posted_week(week: int) -> None:
 _LOGO_IMAGE_CACHE: dict[str, Image.Image] = {}
 
 
-def get_team_logo(team: str, zoom: float = 0.042) -> OffsetImage | None:
-    """Loads team logo from in-memory cache or local logos/ dir, falling back to ESPN CDN once."""
+def get_team_logo(team: str, zoom: float = 0.35) -> OffsetImage | None:
+    """Loads team logo, normalizes dimensions to an 80x80 bounding box, and caches in memory."""
     if team not in _LOGO_IMAGE_CACHE:
         local_path = os.path.join(LOGO_DIR, f"{team}.png")
         try:
@@ -121,6 +121,7 @@ def get_team_logo(team: str, zoom: float = 0.042) -> OffsetImage | None:
                 resp = requests.get(url, timeout=10)
                 resp.raise_for_status()
                 img = Image.open(BytesIO(resp.content)).convert("RGBA")
+            img.thumbnail((80, 80), Image.Resampling.LANCZOS)
             _LOGO_IMAGE_CACHE[team] = img
         except Exception as e:
             print(f"Warning: could not load logo for {team}: {e}")
@@ -380,13 +381,13 @@ def render_slopegraph(prev_df: pd.DataFrame, curr_df: pd.DataFrame, prev_wk: int
 
         ax.plot([0, 1], [y1, y2], color=color, linewidth=lw, alpha=alpha, zorder=zorder)
 
-        logo_left = get_team_logo(t, zoom=0.036)
+        logo_left = get_team_logo(t, zoom=0.35)
         if logo_left:
             ax.add_artist(AnnotationBbox(logo_left, (-0.045, y1), frameon=False, zorder=zorder + 1))
         ax.text(-0.10, y1, f"#{y1} {t}", ha="right", va="center", fontsize=9.5,
                 fontweight="bold" if is_riser else "normal", color="#111111" if is_riser else "#555555")
 
-        logo_right = get_team_logo(t, zoom=0.036)
+        logo_right = get_team_logo(t, zoom=0.35)
         if logo_right:
             ax.add_artist(AnnotationBbox(logo_right, (1.045, y2), frameon=False, zorder=zorder + 1))
 
@@ -407,8 +408,7 @@ def render_slopegraph(prev_df: pd.DataFrame, curr_df: pd.DataFrame, prev_wk: int
 
     plt.suptitle(f"NFL Power Rankings: Week {prev_wk} to Week {curr_wk} Movement",
                  fontsize=17, fontweight="bold", y=0.96, color="#111111")
-    ax.set_title("Recency-Weighted Early-Down EPA + S-Curve Standings Convergence | @pixelgaragedata",
-                 fontsize=10.5, color="#555555", pad=22)
+    ax.set_title(f"{SEASON} Season | @pixelgaragedata", fontsize=11, color="#555555", pad=22)
 
     plt.savefig(out_path, dpi=220, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
@@ -431,7 +431,7 @@ def render_playoff_chart(sim_df: pd.DataFrame, rankings_df: pd.DataFrame, curr_w
     for idx, (_, row) in enumerate(top16.iterrows()):
         t = row["team"]
         rec_str = f"{row['wins']}-{row['losses']}" + (f"-{row['ties']}" if row["ties"] else "")
-        logo = get_team_logo(t, zoom=0.036)
+        logo = get_team_logo(t, zoom=0.35)
         if logo:
             ax.add_artist(AnnotationBbox(logo, (-4.5, idx), frameon=False))
         ax.text(-9.5, idx, f"{t} ({rec_str})", ha="right", va="center", fontsize=10, fontweight="bold", color="#111111")
