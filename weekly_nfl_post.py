@@ -1,11 +1,13 @@
 import os
+import sys
 import json
 import time
+import argparse
 import requests
 import numpy as np
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg")  # Headless rendering for GitHub Actions
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 from PIL import Image
@@ -33,12 +35,11 @@ HOME_FIELD_ADV = 5.0
 
 FALLBACK_MODELS = [
     "gemini-3.8-flash",
-    "gemini-3.5-flash-lite",
     "gemini-2.5-flash",
+    "gemini-3.5-flash-lite",
     "gemini-2.0-flash",
 ]
 
-# NFL Divisions & Colors for Charts
 TEAM_DIVISIONS = {
     "BUF": ("AFC", "East"), "MIA": ("AFC", "East"), "NE": ("AFC", "East"), "NYJ": ("AFC", "East"),
     "BAL": ("AFC", "North"), "CIN": ("AFC", "North"), "CLE": ("AFC", "North"), "PIT": ("AFC", "North"),
@@ -63,22 +64,47 @@ TEAM_COLORS = {
 
 ESPN_LOGO_MAP = {"LA": "lar", "WAS": "wsh"}
 
-SYSTEM_PROMPT = """You are @pixelgaragedata (Pixel Garage Graphics), a Principal Data Scientist and NFL analytics nerd who builds clean charts and statistical models.
-Write 3 distinct, sharp X post options announcing this week's NFL Power Rankings and Playoff Simulation results.
+RANKINGS_SYSTEM_PROMPT = """You are @pixelgaragedata (Pixel Garage Graphics), a Principal Data Scientist and NFL analytics nerd who builds clean charts and statistical models.
+Write 3 distinct, sharp X post options announcing this week's Tuesday NFL Power Rankings and week over week movement.
 
 Voice and Formatting Rules:
 - Sound like an insightful, grounded football analytics practitioner.
-- Keep every post strictly under 250 characters so there is plenty of room for charts.
+- Keep every post strictly under 250 characters so there is plenty of room for the slopegraph chart.
 - Do not use hyphens or em dashes anywhere in your text.
 - Do not use hashtags or generic filler like "Check this out" or "New rankings dropped".
-- Mention specific teams, rank shifts, or playoff odds from the provided summary.
+- Mention specific teams, scores, or rank shifts from the provided summary.
 
 Vary the 3 options:
-1. Top Contenders Focus: Highlight the #1 team, top tier separation, and what separates them under the hood.
-2. Biggest Movers Focus: Highlight the biggest week over week risers or fallers and why recent efficiency shifted them.
-3. Playoff Odds Focus: Highlight an intriguing division race or playoff probability insight from the 1,000 season simulation.
+1. Top Tier Focus: Highlight the #1 team and how much separation exists at the top of the league.
+2. Biggest Risers Focus: Highlight the biggest week over week risers and why recent efficiency lifted them.
+3. Biggest Fallers or Record vs EPA Divergence Focus: Highlight a team sliding down or a team whose underlying EPA tells a different story than its record.
 
-Return ONLY valid JSON in this exact format:
+Return ONLY valid JSON:
+{
+  "options": [
+    "First post option here",
+    "Second post option here",
+    "Third post option here"
+  ]
+}
+"""
+
+PLAYOFFS_SYSTEM_PROMPT = """You are @pixelgaragedata (Pixel Garage Graphics), a Principal Data Scientist and NFL analytics nerd who builds clean charts and statistical models.
+Write 3 distinct, sharp X post options announcing this week's Thursday NFL Playoff and Division Probability projections based on 1,000 full season simulations.
+
+Voice and Formatting Rules:
+- Sound like an insightful, grounded football analytics practitioner.
+- Keep every post strictly under 250 characters so there is plenty of room for the playoff odds chart.
+- Do not use hyphens or em dashes anywhere in your text.
+- Do not use hashtags or generic filler like "Check this out" or "New projections dropped".
+- Mention specific playoff percentages, division title odds, or #1 seed probabilities from the provided summary.
+
+Vary the 3 options:
+1. Tightest Division Race Focus: Highlight a close division battle where two contenders are splitting simulation outcomes.
+2. Top Seed & Locks Focus: Highlight the teams dominating conference #1 seed and playoff lock probabilities.
+3. Wild Card Bubble Focus: Highlight teams fighting on the playoff cut line heading into the weekend slate.
+
+Return ONLY valid JSON:
 {
   "options": [
     "First post option here",
@@ -89,27 +115,33 @@ Return ONLY valid JSON in this exact format:
 """
 
 
-# --- State & Data Loaders ---
-def load_last_posted_week() -> int:
+# --- State & Logo Loaders ---
+def load_state() -> dict:
     if not os.path.exists(STATE_FILE):
-        return 0
+        return {"season": SEASON, "rankings_week": 0, "playoffs_week": 0}
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return int(json.load(f).get("last_week", 0))
+            data = json.load(f)
+            # Migrate legacy single-week format seamlessly
+            legacy = int(data.get("last_week", 0))
+            return {
+                "season": SEASON,
+                "rankings_week": int(data.get("rankings_week", legacy)),
+                "playoffs_week": int(data.get("playoffs_week", 0)),
+            }
     except Exception:
-        return 0
+        return {"season": SEASON, "rankings_week": 0, "playoffs_week": 0}
 
 
-def save_last_posted_week(week: int) -> None:
+def save_state(state: dict) -> None:
     with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"season": SEASON, "last_week": week}, f, indent=2)
+        json.dump(state, f, indent=2)
 
 
 _LOGO_IMAGE_CACHE: dict[str, Image.Image] = {}
 
 
 def get_team_logo(team: str, zoom: float = 0.35) -> OffsetImage | None:
-    """Loads team logo, normalizes dimensions to an 80x80 bounding box, and caches in memory."""
     if team not in _LOGO_IMAGE_CACHE:
         local_path = os.path.join(LOGO_DIR, f"{team}.png")
         try:
@@ -300,7 +332,6 @@ def simulate_playoffs(rankings_df: pd.DataFrame, schedule_df: pd.DataFrame, curr
     playoff_counts = {t: 0 for t in ratings}
     div_counts = {t: 0 for t in ratings}
     one_seed_counts = {t: 0 for t in ratings}
-
     rem_records = remaining[["home_team", "away_team"]].to_dict("records")
 
     for _ in range(SIM_TRIALS):
@@ -406,7 +437,7 @@ def render_slopegraph(prev_df: pd.DataFrame, curr_df: pd.DataFrame, prev_wk: int
     for spine in ax.spines.values():
         spine.set_visible(False)
 
-    plt.suptitle(f"NFL Power Rankings: Week {prev_wk} to Week {curr_wk} Movement",
+    plt.suptitle(f"NFL Power Rankings: Week {prev_wk} to Week {curr_wk}",
                  fontsize=17, fontweight="bold", y=0.96, color="#111111")
     ax.set_title(f"{SEASON} Season | @pixelgaragedata", fontsize=11, color="#555555", pad=22)
 
@@ -447,15 +478,15 @@ def render_playoff_chart(sim_df: pd.DataFrame, rankings_df: pd.DataFrame, curr_w
 
     plt.suptitle(f"NFL Playoff & Division Odds Through Week {curr_wk}",
                  fontsize=16.5, fontweight="bold", y=0.96, color="#111111")
-    ax.set_title(f"{SIM_TRIALS:,} Season Simulations Using v2 Power Ratings + Tiebreakers | @pixelgaragedata",
-                 fontsize=10.5, color="#555555", pad=16)
+    ax.set_title(f"{SEASON} Season ({SIM_TRIALS:,} Simulations) | @pixelgaragedata",
+                 fontsize=11, color="#555555", pad=16)
 
     plt.savefig(out_path, dpi=220, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
 
 
 # --- Gemini Copy & GitHub Issue Draft Creator ---
-def generate_post_options(gemini_client: genai.Client, summary_payload: str) -> list[str]:
+def generate_post_options(gemini_client: genai.Client, system_prompt: str, summary_payload: str) -> list[str]:
     last_err = None
     for model_name in FALLBACK_MODELS:
         for _ in range(3):
@@ -464,7 +495,7 @@ def generate_post_options(gemini_client: genai.Client, summary_payload: str) -> 
                     model=model_name,
                     contents=summary_payload,
                     config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_PROMPT,
+                        system_instruction=system_prompt,
                         response_mime_type="application/json",
                         temperature=0.65,
                     ),
@@ -483,96 +514,122 @@ def generate_post_options(gemini_client: genai.Client, summary_payload: str) -> 
     raise RuntimeError(f"All Gemini models failed. Last error: {last_err}")
 
 
-def open_draft_issue(curr_wk: int, options: list[str], top10_md: str, slope_path: str, odds_path: str) -> None:
+def open_draft_issue(title: str, chart_label: str, chart_path: str, snapshot_title: str, snapshot_md: str, options: list[str]) -> None:
     repo = os.environ["GITHUB_REPOSITORY"]
     token = os.environ["GITHUB_TOKEN"]
     branch = "main"
-
-    slope_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{slope_path}"
-    odds_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{odds_path}"
+    chart_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{chart_path}"
 
     body = (
-        f"### Week {curr_wk} NFL Power Rankings & Playoff Odds\n\n"
-        f"![Slopegraph]({slope_url})\n\n"
-        f"![Playoff Odds]({odds_url})\n\n"
-        f"### Top 10 Snapshot\n{top10_md}\n\n"
+        f"### {title}\n\n"
+        f"![{chart_label}]({chart_url})\n\n"
+        f"### {snapshot_title}\n{snapshot_md}\n\n"
         f"---\n\n"
         f"### Post Caption Options for @pixelgaragedata\n"
         f"**1:** {options[0]}\n\n"
         f"**2:** {options[1]}\n\n"
         f"**3:** {options[2]}\n\n"
         f"---\n"
-        f"Comment `1`, `2`, `3`, or custom text to publish this post with both charts to X. Comment `skip` to close."
+        f"Comment `1`, `2`, `3`, or custom text to publish this post with the chart to X. Comment `skip` to close."
     )
 
     resp = requests.post(
         f"https://api.github.com/repos/{repo}/issues",
         headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
         json={
-            "title": f"NFL Week {curr_wk} Power Rankings Draft",
+            "title": title,
             "body": body,
             "labels": ["nfl-post-draft"],
         },
         timeout=30,
     )
     resp.raise_for_status()
-    print(f"Opened NFL Draft Issue #{resp.json()['number']}")
+    print(f"Opened NFL Draft Issue #{resp.json()['number']} ({title})")
 
 
 def main() -> None:
-    print(f"Loading {SEASON} play-by-play and schedule data...")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["rankings", "playoffs"], required=True)
+    args = parser.parse_args()
+
+    print(f"Running NFL pipeline in '{args.mode}' mode for {SEASON}...")
     pbp = pd.read_parquet(PBP_URL)
     pbp_reg = pbp[pbp["season_type"] == "REG"].copy()
 
     completed_games = pbp_reg.dropna(subset=["home_score", "away_score"])
     latest_week = int(completed_games["week"].max())
-    last_posted = load_last_posted_week()
+    state = load_state()
+    state_key = "rankings_week" if args.mode == "rankings" else "playoffs_week"
 
-    if latest_week <= last_posted and os.environ.get("FORCE_RUN") != "true":
-        print(f"Week {latest_week} already processed (last_posted={last_posted}). Exiting.")
+    if latest_week <= state[state_key] and os.environ.get("FORCE_RUN") != "true":
+        print(f"Week {latest_week} already processed for {args.mode} (saved={state[state_key]}). Exiting.")
         return
 
     prev_week = max(1, latest_week - 1)
-    print(f"Computing rankings for Week {prev_week} and Week {latest_week}...")
-    prev_df = compute_rankings_v2(pbp_reg, prev_week)
     curr_df = compute_rankings_v2(pbp_reg, latest_week)
-
-    games = pd.read_csv(GAMES_URL)
-    sched_2026 = games[(games["season"] == SEASON) & (games["game_type"] == "REG")].copy()
-    sim_df = simulate_playoffs(curr_df, sched_2026, latest_week)
-
     os.makedirs("charts", exist_ok=True)
-    slope_path = f"charts/week_{latest_week:02d}_slopegraph.png"
-    odds_path = f"charts/week_{latest_week:02d}_playoff_odds.png"
-
-    merged = render_slopegraph(prev_df, curr_df, prev_week, latest_week, slope_path)
-    render_playoff_chart(sim_df, curr_df, latest_week, odds_path)
-
-    # Build structured summary for Gemini
-    top10_lines = []
-    for _, r in curr_df.head(10).iterrows():
-        rec = f"{r['wins']}-{r['losses']}" + (f"-{r['ties']}" if r["ties"] else "")
-        top10_lines.append(f"{r['rank']}. {r['team']} ({rec}) | Score: {r['proprietary_score']:.1f} | EPA: {r['advanced_epa_score']:.1f}")
-    top10_md = "\n".join(top10_lines)
-
-    risers = merged.nlargest(3, "delta")[["team", "prev_rank", "curr_rank", "delta"]].to_dict("records")
-    fallers = merged.nsmallest(3, "delta")[["team", "prev_rank", "curr_rank", "delta"]].to_dict("records")
-    top_odds = sim_df.head(10).to_dict("records")
-
-    summary_payload = (
-        f"Season {SEASON} Week {latest_week} Results:\n"
-        f"Record Weight: {calculate_sigmoid_weight_v2(latest_week):.1%}\n\n"
-        f"Top 10:\n{top10_md}\n\n"
-        f"Biggest Risers: {risers}\n"
-        f"Biggest Fallers: {fallers}\n"
-        f"Top Playoff Probabilities: {top_odds}"
-    )
-
     gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    options = generate_post_options(gemini_client, summary_payload)
 
-    open_draft_issue(latest_week, options, top10_md, slope_path, odds_path)
-    save_last_posted_week(latest_week)
+    if args.mode == "rankings":
+        prev_df = compute_rankings_v2(pbp_reg, prev_week)
+        slope_path = f"charts/week_{latest_week:02d}_slopegraph.png"
+        merged = render_slopegraph(prev_df, curr_df, prev_week, latest_week, slope_path)
+
+        top10_lines = []
+        for _, r in curr_df.head(10).iterrows():
+            rec = f"{r['wins']}-{r['losses']}" + (f"-{r['ties']}" if r["ties"] else "")
+            top10_lines.append(f"{r['rank']}. {r['team']} ({rec}) | Score: {r['proprietary_score']:.1f} | EPA: {r['advanced_epa_score']:.1f}")
+        top10_md = "\n".join(top10_lines)
+
+        risers = merged.nlargest(3, "delta")[["team", "prev_rank", "curr_rank", "delta"]].to_dict("records")
+        fallers = merged.nsmallest(3, "delta")[["team", "prev_rank", "curr_rank", "delta"]].to_dict("records")
+
+        payload = (
+            f"Season {SEASON} Week {latest_week} Tuesday Power Rankings:\n"
+            f"Record Weight: {calculate_sigmoid_weight_v2(latest_week):.1%}\n\n"
+            f"Top 10:\n{top10_md}\n\n"
+            f"Biggest Risers: {risers}\n"
+            f"Biggest Fallers: {fallers}"
+        )
+        options = generate_post_options(gemini_client, RANKINGS_SYSTEM_PROMPT, payload)
+        open_draft_issue(
+            title=f"NFL Week {latest_week} Power Rankings Draft",
+            chart_label="Slopegraph",
+            chart_path=slope_path,
+            snapshot_title="Top 10 Power Rankings Snapshot",
+            snapshot_md=top10_md,
+            options=options,
+        )
+
+    else:
+        games = pd.read_csv(GAMES_URL)
+        sched_2026 = games[(games["season"] == SEASON) & (games["game_type"] == "REG")].copy()
+        sim_df = simulate_playoffs(curr_df, sched_2026, latest_week)
+        odds_path = f"charts/week_{latest_week:02d}_playoff_odds.png"
+        render_playoff_chart(sim_df, curr_df, latest_week, odds_path)
+
+        odds_lines = []
+        for idx, r in sim_df.head(14).iterrows():
+            odds_lines.append(f"{idx + 1}. {r['team']} | Playoffs: {r['playoff_pct']:.1f}% | Div: {r['div_pct']:.1f}% | #1 Seed: {r['one_seed_pct']:.1f}%")
+        odds_md = "\n".join(odds_lines)
+
+        payload = (
+            f"Season {SEASON} Through Week {latest_week} Thursday Playoff & Division Odds ({SIM_TRIALS:,} Sims):\n\n"
+            f"Top 14 Contenders:\n{odds_md}\n\n"
+            f"Full Simulation Table:\n{sim_df.head(20).to_dict('records')}"
+        )
+        options = generate_post_options(gemini_client, PLAYOFFS_SYSTEM_PROMPT, payload)
+        open_draft_issue(
+            title=f"NFL Week {latest_week} Playoff & Division Odds Draft",
+            chart_label="Playoff Odds",
+            chart_path=odds_path,
+            snapshot_title="Top 14 Playoff & Division Odds Snapshot",
+            snapshot_md=odds_md,
+            options=options,
+        )
+
+    state[state_key] = latest_week
+    save_state(state)
 
 
 if __name__ == "__main__":
