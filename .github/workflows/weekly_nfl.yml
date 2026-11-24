@@ -1,4 +1,4 @@
-name: Draft Weekly NFL Rankings
+name: Tuesday NFL Power Rankings Draft
 
 on:
   schedule:
@@ -19,7 +19,7 @@ permissions:
   issues: write
 
 jobs:
-  generate-nfl-draft:
+  draft-tuesday-rankings:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -34,17 +34,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run NFL Power Ranking & Chart Generator
+      - name: Generate Tuesday Power Rankings Draft
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORCE_RUN: ${{ github.event.inputs.force_run || 'false' }}
-        run: python weekly_nfl_post.py
+        run: python weekly_nfl_post.py --mode rankings
 
-      - name: Commit generated charts and state
+      - name: Commit generated chart and state
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add charts/ last_posted_week.json
-          git diff --staged --quiet || git commit -m "Add weekly NFL charts and update state"
+          git diff --staged --quiet || git commit -m "Add Tuesday NFL power rankings chart"
           git push
